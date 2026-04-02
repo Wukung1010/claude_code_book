@@ -115,6 +115,21 @@ program.hook('preAction', async (thisCommand) => {
 
 换句话说，preAction 是“所有命令执行前的统一冷启动屏障”。
 
+把这段函数级骨架单独拎出来看，会更容易理解它为什么是“屏障”而不是“普通 hook”：
+
+```ts
+program.hook('preAction', async (thisCommand) => {
+  await Promise.all([ensureMdmSettingsLoaded(), ensureKeychainPrefetchCompleted()])
+  await init()
+  initSinks()
+  runMigrations()
+  void loadRemoteManagedSettings()
+  void loadPolicyLimits()
+})
+```
+
+这里关键不是列出几个初始化函数，而是它们的先后顺序被固定了下来：先收口启动早期并行预取，再做全局 init，然后把 sinks 和 migrations 接上，最后异步刷新远端受管设置与策略限制。Commander 在这里已经不只是参数解析器，而是统一运行时进入命令执行前的最后一道装配关口。
+
 ## 2.6 为什么默认 action 会非常长
 
 默认 action 承担的是“没有进入特殊 subcommand 时的主业务路径”。
@@ -131,6 +146,25 @@ program.hook('preAction', async (thisCommand) => {
 8. 决定最后是进入 REPL，还是进入 print/headless 路径
 
 所以你看到的不是一个“过长的 action”，而是整个产品默认主路径的装配全过程。
+
+默认 action 之所以显得长，还有一个很具体的原因：它把 setup 与命令/agent 定义加载做了按条件并行。源码骨架大致如下：
+
+```ts
+const setupPromise = setup(...)
+const commandsPromise = worktreeEnabled ? null : getCommands(preSetupCwd)
+const agentDefsPromise = worktreeEnabled
+  ? null
+  : getAgentDefinitionsWithOverrides(preSetupCwd)
+
+await setupPromise
+
+const [commands, agentDefinitionsResult] = await Promise.all([
+  commandsPromise ?? getCommands(currentCwd),
+  agentDefsPromise ?? getAgentDefinitionsWithOverrides(currentCwd),
+])
+```
+
+这段代码很能体现 main.tsx 的启动哲学：只要 worktree 还没介入、cwd 不会变化，就尽量把磁盘扫描与环境搭建重叠起来。也就是说，default action 的复杂度有一部分其实来自性能优化后的时序编排，而不是单纯功能堆叠。
 
 ## 2.7 commands.ts 的角色：命令不是静态表，而是动态组合结果
 
@@ -362,3 +396,13 @@ sequenceDiagram
     CMD-->>ACT: 返回命令与 agents 索引
     ACT->>ACT: 决定进入 REPL 或 print 路径
 ```
+
+## 2.16 这一章和后续章节怎么衔接
+
+第 2 章的价值，在于它第一次把“入口文件”还原成了真正的运行时装配器。
+
+1. 它会直接通向第 3 章，因为命令装配完成之后，程序下一步要解决的就是 setup、信任边界和首次渲染这些运行现场问题。
+2. 它会回流到第 8 章，因为 commands.ts 在这里先以启动装配的一部分出现，后面才会被展开成命令、技能和 MCP 能力索引。
+3. 它也会延伸到第 14 章和第 20 章，因为 remote、ssh、direct connect 这些模式虽然在入口期就被识别，但要到后面才会真正展开为执行拓扑和统一控制面。
+
+所以第 2 章最好的读法，不是把它当成“参数解析章节”，而是把它看成统一运行时从入口进入装配态的第一道总线。

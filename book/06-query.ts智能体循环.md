@@ -288,6 +288,29 @@ query.ts 里同时支持两类工具执行方式：
 
 这意味着 query.ts 不只是“模型调用循环”，它同时还是“模型输出流”和“工具执行流”的同步点。
 
+这层“同步点”在源码里体现得很直接。流式工具执行大致是这样接进主循环的：
+
+```ts
+if (streamingToolExecutor && !toolUseContext.abortController.signal.aborted) {
+  for (const toolBlock of msgToolUseBlocks) {
+    streamingToolExecutor.addTool(toolBlock, assistantMessage)
+  }
+}
+
+if (streamingToolExecutor && !toolUseContext.abortController.signal.aborted) {
+  for (const result of streamingToolExecutor.getCompletedResults()) {
+    if (result.message) {
+      yield result.message
+      toolResults.push(
+        ...normalizeMessagesForAPI([result.message], toolUseContext.options.tools).filter((_) => _.type === 'user'),
+      )
+    }
+  }
+}
+```
+
+这段代码很值得仔细体会：assistant 的流式输出还在继续进入循环，但工具已经可以被提前启动，完成后的 `tool_result` 又会立刻被回灌进 `toolResults`。所以 query.ts 管理的不是一条单线流程，而是模型输出流和工具执行流之间的会合点。
+
 ## 6.17 413 和 max_output_tokens 恢复为什么都放在 query 层
 
 这两类错误理论上可以在 API 层处理，但 Claude Code 没这么做。
@@ -316,3 +339,34 @@ queryLoop 的结束并不是简单判断“这一轮没有 tool_use 了”。
 所以真正的 return 点，是多种策略共同判定出来的。
 
 这就是为什么 query.ts 很长，因为它维护的是生产环境里的复杂终止语义。
+
+fallback 恢复链也能很好体现这种“复杂终止语义”。源码里遇到 FallbackTriggeredError 时，并不是只换个模型继续跑，而是先修补轨迹再重建执行器：
+
+```ts
+if (innerError instanceof FallbackTriggeredError && fallbackModel) {
+  currentModel = fallbackModel
+  attemptWithFallback = true
+
+  yield * yieldMissingToolResultBlocks(assistantMessages, 'Model fallback triggered')
+
+  if (streamingToolExecutor) {
+    streamingToolExecutor.discard()
+    streamingToolExecutor = new StreamingToolExecutor(toolUseContext.options.tools, canUseTool, toolUseContext)
+  }
+
+  toolUseContext.options.mainLoopModel = fallbackModel
+  continue
+}
+```
+
+这里最重要的细节是：在切换 fallback model 之前，query.ts 会先为未闭合的 tool_use 补齐 tool_result，再丢弃旧的 streamingToolExecutor 状态并重新创建执行器。也就是说，fallback 不是“简单重试”，而是一次带轨迹修复的重新进入主循环。
+
+## 6.19 这一章和后续章节怎么衔接
+
+第 6 章是前半本里最核心的执行章节，因为它第一次把 Claude Code 还原成了一台真正的 agentic loop。
+
+1. 它承接第 5 章，因为 QueryEngine 只负责会话编排，而这里才真正展开“单轮里模型、工具、恢复、停止条件如何闭环”。
+2. 它会直接通向第 7 章和第 11 章，因为 tool_use 一旦进入执行路径，后面就必须继续读工具池装配、权限过滤和并发调度这些下游系统。
+3. 它也会回流到第 12 章，因为这里看到的 compact、withheld、fallback、token 恢复，后面都会被进一步解释成 API/cache/预算治理的一部分。
+
+所以第 6 章最好被理解成统一运行时里的“单轮执行内核”，后面很多章节其实都只是继续拆开它内部的几个关键子系统。

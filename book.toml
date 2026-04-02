@@ -1,0 +1,8 @@
+[book]
+title="Claude Code 设计揭秘"
+authors=["神学家"]
+language="zh-CN"
+src="book"
+
+[output.html]
+default-theme="light"

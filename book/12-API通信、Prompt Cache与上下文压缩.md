@@ -358,15 +358,25 @@ sequenceDiagram
     participant CC as compactConversation
 
     Q->>U: splitSysPromptPrefix / toolToAPISchema
-    U-->>API: 可缓存的prompt块与工具schema
+    U-->>API: 可缓存的 prompt 块与工具 schema
     API->>API: buildSystemPromptBlocks
     Q->>AC: shouldAutoCompact / autoCompactIfNeeded
     AC->>AC: 预算阈值判断 + 递归防护
     AC->>AC: trySessionMemoryCompaction
-    AC->>CC: fallback到正式压缩
+    AC->>CC: fallback 到正式压缩
     API-->>Q: 流式响应或错误
 ```
 
 这张图背后最核心的结论是：
 
 - Claude Code 的 API 层不是请求出口，而是上下文预算、缓存稳定性和协议兼容性的总汇合点。
+
+## 12.22 这一章和后续章节怎么衔接
+
+第 12 章虽然讲的是 API/cache/compact，但它其实是在给前半本很多章节收束“成本与预算”这一条暗线。
+
+1. 它承接第 4 章和第 6 章，因为上下文素材如何构造、query loop 如何恢复执行，到这里都进一步被解释成缓存边界、provider 协商和预算治理问题。
+2. 它会回流到第 8 章和第 16 章，因为命令、技能、MCP tools 一旦进入正式请求，就都要服从这里定义的 schema 稳定性与 prompt cache 语义。
+3. 它也会影响第 13 章，因为输出截断、prompt-too-long 和 reactive compact 的恢复逻辑，后面继续读 resume/continue 时会再次出现。
+
+所以第 12 章不是“API 细节补充”，而是在解释统一运行时为什么能把长任务、多轮工具链和高成本上下文维持在可持续范围内。

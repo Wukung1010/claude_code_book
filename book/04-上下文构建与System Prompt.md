@@ -19,6 +19,8 @@
 
 其中 context.ts 负责的是 system context 和 user context 这两块。
 
+从全书术语上说，这一章讲的是统一运行时如何为每一轮会话准备稳定上下文素材。
+
 ## 4.2 getSystemContext：系统侧环境快照
 
 getSystemContext() 的职责很明确：生成一份在当前会话内稳定、适合挂到系统提示词尾部的环境快照。
@@ -222,6 +224,20 @@ const [defaultSystemPrompt, userContext, systemContext] = await Promise.all([
 
 这说明“自定义 system prompt 完全替换默认系统视角”是一个明确的产品语义，而不是简单追加文本。
 
+把 `fetchSystemPromptParts()` 的核心骨架直接贴出来，会更清楚：
+
+```ts
+const [defaultSystemPrompt, userContext, systemContext] = await Promise.all([
+  customSystemPrompt !== undefined
+    ? Promise.resolve([])
+    : getSystemPrompt(tools, mainLoopModel, additionalWorkingDirectories, mcpClients),
+  getUserContext(),
+  customSystemPrompt !== undefined ? Promise.resolve({}) : getSystemContext(),
+])
+```
+
+这段代码有两个非常重要的信号。第一，system prompt、user context、system context 三块是并发获取的，说明它们在编排层里被视作并列的上下文素材。第二，customSystemPrompt 会直接让默认 `getSystemPrompt()` 和 `getSystemContext()` 双双退出，这不是“替换一段文字”，而是替换默认系统视角整套装配逻辑。
+
 ## 4.12 为什么自定义 system prompt 会跳过 systemContext
 
 这一步很多人第一次看会觉得奇怪：
@@ -258,6 +274,21 @@ void getSystemContext()
 - 所以 system context 收集并不被视作完全无害的纯读取
 
 这说明上下文系统也服从安全模型，而不是独立于安全模型之外。
+
+这条 trust 接缝在 `showSetupScreens()` 里写得非常直白：
+
+```ts
+setSessionTrustAccepted(true)
+resetGrowthBook()
+void initializeGrowthBook()
+void getSystemContext()
+
+if (allErrors.length === 0) {
+  await handleMcpjsonServerApprovals(root)
+}
+```
+
+顺序本身就是设计：先确认 trust 成立，再重置并初始化依赖 trust 的服务，然后才预取 system context 和处理 mcp 审批。这意味着 `getSystemContext()` 虽然表面上只是 git/status 汇总，但在统一运行时里它仍然属于“受信任工作区之后才能主动拉起”的系统信息。
 
 ## 4.14 getUserContext 与 bare mode 的语义
 
@@ -296,6 +327,18 @@ bare 的意思是“跳过我没要求的东西”，不是“忽略我明确要
 
 这是一个非常典型的“本地设计影响云端账单”的工程点。
 
+另一个很容易被忽略但很关键的细节，是 `setSystemPromptInjection()` 会在 cache breaker 变化时立刻清空上下文缓存：
+
+```ts
+export function setSystemPromptInjection(value: string | null): void {
+  systemPromptInjection = value
+  getUserContext.cache.clear?.()
+  getSystemContext.cache.clear?.()
+}
+```
+
+这说明 context.ts 的缓存并不是“算过一次就永远不动”，而是围绕 prompt 前缀稳定性精细控制的。一旦 cache breaker 改变，user/system context 都必须立刻失效重算，否则缓存命中就会建立在错误前提上。
+
 ## 4.16 system prompt、system context、user context 的职责边界
 
 到这里可以把三者边界总结得更明确：
@@ -313,3 +356,13 @@ bare 的意思是“跳过我没要求的东西”，不是“忽略我明确要
 提供项目级、用户级长期知识，例如 CLAUDE.md、日期、memory 相关内容。
 
 这样分层之后，后面的 QueryEngine 才能把它们按不同语义装配进同一个回合。
+
+## 4.17 这一章和后续章节怎么衔接
+
+第 4 章是前半本里承上启下的一章：
+
+1. 它承接第 1 章的统一运行时全景，把“系统为什么不是只看当前输入”这个问题具体化为 `system context + user context + system prompt` 三层素材。
+2. 它直接通向第 5 章，因为 `QueryEngine` 正是这些上下文素材真正进入会话编排的接缝。
+3. 它也会回流到第 12 章，因为这里反复强调的缓存稳定性、prompt 边界和上下文分层，本质上就是后面 prompt cache 与上下文压缩能成立的前提。
+
+所以第 4 章最好的读法，不是把它当成“提示词章节”，而是把它看成统一运行时里的上下文装配章节。
